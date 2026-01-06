@@ -5,4 +5,3 @@ __pycache__/
 .env
 best_params.json
 venv/
-CHECKLIST.md
