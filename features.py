@@ -348,7 +348,9 @@ def engineer_features(df: "pd.DataFrame", drop_warmup: bool, warmup_days: int) -
     
     result = pd.concat(all_features, ignore_index=True)
     
-    result = result.ffill()
+    # Apply forward fill PER TICKER to avoid cross-ticker contamination
+    # This ensures AAPL's missing values are filled with AAPL's past data, not MSFT's
+    result = result.groupby('ticker', group_keys=False).apply(lambda x: x.ffill())
     
     if drop_warmup and warmup_days > 0:
         filtered_parts = []
