@@ -90,6 +90,7 @@ if CONFIG:
 TRAINING_YEARS_BACK_LIMITED = CONFIG.get("TRAINING_YEARS_BACK_LIMITED", 3)
 TRAINING_YEARS_BACK_FULL = CONFIG.get("TRAINING_YEARS_BACK_FULL", None)
 
+# MongoDB connection from environment variables (set by alpha_agent.py)
 # CRITICAL: Strict enforcement - no fallback allowed
 MONGODB_URI = os.environ.get("SIMICX_MONGODB_URI")
 MONGODB_DATABASE = os.environ.get("SIMICX_MONGODB_DATABASE")

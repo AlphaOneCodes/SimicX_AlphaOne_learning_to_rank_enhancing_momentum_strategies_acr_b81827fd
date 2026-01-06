@@ -50,7 +50,8 @@ def get_tickers_for_phase(config: Dict[str, Any], phase: str) -> List[str]:
 def run_backtest(
     signals_df: 'pd.DataFrame',
     allow_short: bool = True,
-    initial_capital: float = 1_000_000.0
+    initial_capital: float = 1_000_000.0,
+    tickers: List[str] = None
 ) -> Tuple[float, 'pd.DataFrame']:
     """Run backtest simulation on trading signals."""
     from simicx.trading_sim import trading_sim
@@ -63,7 +64,8 @@ def run_backtest(
         spread_rate=0.0001,
         min_trade_value=100.0,
         max_position_pct=0.25,
-        risk_free_rate=0.02
+        risk_free_rate=0.02,
+        ohlcv_tickers=tickers
     )
 
 
@@ -205,7 +207,7 @@ def main(phase: Optional[str] = None) -> Tuple[float, 'pd.DataFrame']:
         return 0.0, pd.DataFrame()
 
     print("\n[6/6] Running backtest simulation...")
-    pnl, pnl_details = run_backtest(signals_df)
+    pnl, pnl_details = run_backtest(signals_df, tickers=tickers)
 
     print("\n")
     report = generate_performance_report(pnl_details)
