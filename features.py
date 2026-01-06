@@ -218,6 +218,9 @@ def engineer_features_for_ticker(prices: "pd.Series", ticker: str) -> "pd.DataFr
     feature_df = pd.DataFrame(index=prices.index)
     feature_df['ticker'] = ticker
     
+    # Preserve original close price for downstream use
+    feature_df['close'] = prices
+    
     feature_df['raw_momentum_1m'] = log_returns.rolling(window=21, min_periods=1).sum()
     
     for h in [1, 3, 5, 10, 21]:
@@ -250,7 +253,8 @@ def engineer_features_for_ticker(prices: "pd.Series", ticker: str) -> "pd.DataFr
     
     feature_df['target'] = log_returns.shift(-1)
     
-    feature_df['ex_ante_volatility'] = ex_ante_vol
+    # Use 'ex_ante_vol' to match signal_gen.py expectations
+    feature_df['ex_ante_vol'] = ex_ante_vol
     
     return feature_df
 
@@ -300,6 +304,12 @@ def engineer_features(df: "pd.DataFrame", drop_warmup: bool, warmup_days: int) -
     
     all_features = []
     
+    # Preserve original OHLCV columns if they exist
+    preserve_cols = []
+    for col in ['open', 'high', 'low', 'volume']:
+        if col in df.columns:
+            preserve_cols.append(col)
+    
     if ticker_col is not None:
         unique_tickers = df[ticker_col].unique()
         for ticker in unique_tickers:
@@ -312,6 +322,12 @@ def engineer_features(df: "pd.DataFrame", drop_warmup: bool, warmup_days: int) -
             prices = ticker_data[price_col]
             features = engineer_features_for_ticker(prices, ticker)
             features['date'] = features.index
+            
+            # Merge back original OHLCV columns
+            for col in preserve_cols:
+                if col in ticker_data.columns:
+                    features[col] = ticker_data[col].values
+            
             all_features.append(features)
     else:
         working_df = df.copy()
@@ -322,6 +338,12 @@ def engineer_features(df: "pd.DataFrame", drop_warmup: bool, warmup_days: int) -
         prices = working_df[price_col]
         features = engineer_features_for_ticker(prices, 'UNKNOWN')
         features['date'] = features.index
+        
+        # Merge back original OHLCV columns
+        for col in preserve_cols:
+            if col in working_df.columns:
+                features[col] = working_df[col].values
+        
         all_features.append(features)
     
     result = pd.concat(all_features, ignore_index=True)

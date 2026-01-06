@@ -121,9 +121,13 @@ def signal_gen(
     features_df = features_df.sort_values(['ticker', 'date'])
     
     features_df['next_close'] = features_df.groupby('ticker')['close'].shift(-1)
-    features_df['target'] = (features_df['next_close'] - features_df['close']) / features_df['close']
+    features_df['return'] = (features_df['next_close'] - features_df['close']) / features_df['close']
     
-    features_df = features_df.dropna(subset=['target'])
+    features_df = features_df.dropna(subset=['return'])
+    
+    # Convert returns to integer ranks for LambdaRank (required by LightGBM ranking objective)
+    # Higher return = higher rank (better)
+    features_df['target'] = features_df.groupby('date')['return'].rank(method='first', ascending=True).astype(int)
     
     split_dt = pd.to_datetime(split_date)
     train_df = features_df[features_df['date'] < split_dt].copy()

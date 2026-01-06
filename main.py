@@ -214,6 +214,10 @@ def main(phase: Optional[str] = None) -> Tuple[float, 'pd.DataFrame']:
     print("=" * 70)
     print(f"[main.py] BACKTEST COMPLETE - Final P&L: ${pnl:,.2f}")
     print("=" * 70)
+    
+    # Export detailed results to CSV
+    signals_df.to_csv(f"trading_sheets.csv", index=False)
+    pnl_details.to_csv(f'pnl_details.csv', index=False)
 
     return pnl, pnl_details
 

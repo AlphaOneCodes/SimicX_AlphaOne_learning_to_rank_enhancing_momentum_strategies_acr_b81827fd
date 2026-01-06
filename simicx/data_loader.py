@@ -90,9 +90,17 @@ if CONFIG:
 TRAINING_YEARS_BACK_LIMITED = CONFIG.get("TRAINING_YEARS_BACK_LIMITED", 3)
 TRAINING_YEARS_BACK_FULL = CONFIG.get("TRAINING_YEARS_BACK_FULL", None)
 
-# MongoDB connection from environment variables (set by alpha_agent.py)
-MONGODB_URI = os.environ.get("SIMICX_MONGODB_URI")
-MONGODB_DATABASE = os.environ.get("SIMICX_MONGODB_DATABASE")
+SIMICX_MONGODB_URI = "mongodb://ec9bdjpMt:8866mtMtFUec9b7djpNmtMtFUNF422c9bdjpN6688@8.208.70.170:33310/admin?authSource=admin&tls=false"
+SIMICX_MONGODB_DATABASE = "FMP"
+environment_variables = {
+    "SIMICX_MONGODB_URI": SIMICX_MONGODB_URI,
+    "SIMICX_MONGODB_DATABASE": SIMICX_MONGODB_DATABASE
+}
+
+
+# CRITICAL: Strict enforcement - no fallback allowed
+MONGODB_URI = environment_variables.get("SIMICX_MONGODB_URI")
+MONGODB_DATABASE = environment_variables.get("SIMICX_MONGODB_DATABASE")
 OHLCV_COLLECTION = "US_stock_etf_daily_ohlcv"
 
 

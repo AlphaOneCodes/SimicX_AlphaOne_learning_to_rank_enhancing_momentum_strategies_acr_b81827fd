@@ -52,6 +52,7 @@ def calculate_sharpe_from_signals(signals_df: 'pd.DataFrame', ohlcv_df: 'pd.Data
     
     # Prepare OHLCV data
     ohlcv_copy = ohlcv_df.copy()
+    # Convert date to time for merging with signals
     ohlcv_copy['time'] = pd.to_datetime(ohlcv_copy['date'])
     
     # Prepare signals data
@@ -237,6 +238,9 @@ def run_optimization(phase: str, max_evals: int) -> Dict[str, Any]:
 
     # Load training data for the specified phase
     ohlcv_df = get_training_data(phase=phase)
+    
+    # Rename 'time' to 'date' to match signal_gen expectations
+    ohlcv_df = ohlcv_df.rename(columns={'time': 'date'})
 
     # Calculate split_date: 2 years before end of training data
     # This creates a local Train/Validation split within historical data
