@@ -101,7 +101,6 @@ result = result.groupby('ticker', group_keys=False).apply(lambda x: x.ffill())
 ```
 **Status**: ✅ Resolved - each ticker's missing values filled with its own data only
 
-<<<<<<< HEAD
 #### Issue #6: LambdaRank Sort Order Bug (FIXED ✅) 🚨 **CRITICAL**
 **Problem**: Data sorted by `['ticker', 'date']` before LambdaRank training, breaking cross-sectional grouping  
 **Impact**: LambdaRank was ranking **across dates** instead of **within dates**!
@@ -125,8 +124,6 @@ features_df = features_df.sort_values(['date', 'ticker']).reset_index(drop=True)
 
 **Status**: ✅ Resolved - LambdaRank now correctly ranks cross-sectionally by date
 
-=======
->>>>>>> f4ef41188e3ac6f7d635a6f3c55149fa4a40cb74
 ---
 
 ## 3. Mathematical Integrity ✅

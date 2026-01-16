@@ -118,10 +118,7 @@ def signal_gen(
         if 'time' in features_df.columns:
             features_df['date'] = features_df['time']
     
-<<<<<<< HEAD
     # CRITICAL: Sort by [ticker, date] for per-ticker shift operations
-=======
->>>>>>> f4ef41188e3ac6f7d635a6f3c55149fa4a40cb74
     features_df = features_df.sort_values(['ticker', 'date'])
     
     features_df['next_close'] = features_df.groupby('ticker')['close'].shift(-1)
@@ -133,13 +130,10 @@ def signal_gen(
     # Higher return = higher rank (better)
     features_df['target'] = features_df.groupby('date')['return'].rank(method='first', ascending=True).astype(int)
     
-<<<<<<< HEAD
     # CRITICAL: Re-sort by [date, ticker] for LambdaRank cross-sectional grouping
     # LambdaRank requires rows to be contiguous by date for proper ranking groups
     features_df = features_df.sort_values(['date', 'ticker']).reset_index(drop=True)
     
-=======
->>>>>>> f4ef41188e3ac6f7d635a6f3c55149fa4a40cb74
     split_dt = pd.to_datetime(split_date)
     train_df = features_df[features_df['date'] < split_dt].copy()
     predict_df = features_df[features_df['date'] >= split_dt].copy()
@@ -256,7 +250,6 @@ def signal_gen(
     
     predict_df['action'] = predict_df['signal'].apply(get_action)
     
-<<<<<<< HEAD
     # Generate closing signals for positions that fall out of rankings
     # This implements the paper's daily rebalancing: maintain exactly 6 positions (3 long + 3 short)
     all_signals = []
@@ -330,18 +323,6 @@ def signal_gen(
     
     # Keep all signals (including quantity=0 for closes)
     # trading_sim will handle closing positions based on action + quantity=0
-=======
-    output_df = predict_df[['date', 'ticker', 'action', 'quantity']].copy()
-    output_df = output_df.rename(columns={'date': 'time'})
-    
-    output_df = output_df[output_df['quantity'] != 0].copy()
-    
-    output_df['quantity'] = output_df['quantity'].abs()
-    
-    output_df['quantity'] = output_df['quantity'].round().astype(int)
-    
-    output_df = output_df[output_df['quantity'] > 0]
->>>>>>> f4ef41188e3ac6f7d635a6f3c55149fa4a40cb74
     
     return output_df.reset_index(drop=True)
 
