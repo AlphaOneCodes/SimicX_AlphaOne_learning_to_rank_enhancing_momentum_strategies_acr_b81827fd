@@ -29,25 +29,12 @@ from __future__ import annotations
 import os
 import json
 from pathlib import Path
+import pandas as pd
+import numpy as np
 from typing import List, Tuple, Optional, Union
 from datetime import datetime, timedelta
+from pymongo import MongoClient, ASCENDING
 import threading
-
-# Optional dependencies - allows module to load in minimal environments
-_DEPS_AVAILABLE = True
-_DEPS_ERROR = ""
-
-try:
-    import pandas as pd
-    import numpy as np
-    from pymongo import MongoClient, ASCENDING
-except ImportError as e:
-    _DEPS_AVAILABLE = False
-    _DEPS_ERROR = str(e)
-    pd = None  # type: ignore
-    np = None  # type: ignore
-    MongoClient = None  # type: ignore
-    ASCENDING = 1  # MongoDB ascending constant
 
 # =============================================================================
 # CONFIGURATION
@@ -72,19 +59,8 @@ FULL_TICKERS = CONFIG.get("FULL_TICKERS", [
 ])
 
 # Temporal boundaries - CRITICAL for preventing data leaking
-# HARDCODED: These dates are immutable to ensure data leakage prevention
-# DO NOT load from config - these are fundamental constraints that must never change
-TRAINING_END_DATE = "2024-12-31"   # Training/tuning data ends here (inclusive) - IMMUTABLE
-TRADING_START_DATE = "2025-01-01"  # Trading simulation starts here (inclusive) - IMMUTABLE
-
-# Validate config dates match hardcoded values (if config exists)
-if CONFIG:
-    config_training_end = CONFIG.get("TRAINING_END_DATE")
-    config_trading_start = CONFIG.get("TRADING_START_DATE")
-    if config_training_end and config_training_end != TRAINING_END_DATE:
-        print(f"WARNING: Config TRAINING_END_DATE ({config_training_end}) differs from hardcoded value ({TRAINING_END_DATE}). Using hardcoded value.")
-    if config_trading_start and config_trading_start != TRADING_START_DATE:
-        print(f"WARNING: Config TRADING_START_DATE ({config_trading_start}) differs from hardcoded value ({TRADING_START_DATE}). Using hardcoded value.")
+TRAINING_END_DATE = CONFIG.get("TRAINING_END_DATE", "2024-12-31")   # Training/tuning data ends here (inclusive)
+TRADING_START_DATE = CONFIG.get("TRADING_START_DATE", "2025-01-01")  # Trading simulation starts here (inclusive)
 
 # Training history limits
 TRAINING_YEARS_BACK_LIMITED = CONFIG.get("TRAINING_YEARS_BACK_LIMITED", 3)
@@ -96,21 +72,12 @@ MONGODB_URI = os.environ.get("SIMICX_MONGODB_URI")
 MONGODB_DATABASE = os.environ.get("SIMICX_MONGODB_DATABASE")
 OHLCV_COLLECTION = "US_stock_etf_daily_ohlcv"
 
+if not MONGODB_URI:
+    # HARD STOP: Cannot proceed without database
+    raise ValueError("CRITICAL: SIMICX_MONGODB_URI environment variable not set. Database connection required.")
 
-def _validate_env():
-    """Validate required environment variables and dependencies are available.
-    
-    Raises:
-        ValueError: If required environment variables are not set.
-        RuntimeError: If required dependencies are not installed.
-    """
-    if not _DEPS_AVAILABLE:
-        raise RuntimeError(f"Required dependencies not installed: {_DEPS_ERROR}")
-    if not MONGODB_URI:
-        raise ValueError("CRITICAL: SIMICX_MONGODB_URI environment variable not set. Database connection required.")
-    if not MONGODB_DATABASE:
-        raise ValueError("CRITICAL: SIMICX_MONGODB_DATABASE environment variable not set.")
-
+if not MONGODB_DATABASE:
+    raise ValueError("CRITICAL: SIMICX_MONGODB_DATABASE environment variable not set.")
 
 # =============================================================================
 # MONGODB CONNECTION (Thread-safe singleton)
@@ -120,7 +87,7 @@ _mongo_client = None
 _mongo_lock = threading.Lock()
 
 
-def get_mongo_client() -> "MongoClient":
+def get_mongo_client() -> MongoClient:
     """Get or create MongoDB client connection (thread-safe singleton).
     
     Returns:
@@ -133,7 +100,6 @@ def get_mongo_client() -> "MongoClient":
         >>> client = get_mongo_client()
         >>> db = client[MONGODB_DATABASE]
     """
-    _validate_env()
     global _mongo_client
     if _mongo_client is None:
         with _mongo_lock:
@@ -233,7 +199,7 @@ def get_data(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     align_dates: bool = True
-) -> "pd.DataFrame":
+) -> pd.DataFrame:
     """Get OHLCV data with optional filtering by ticker(s), phase, and date range.
     
     Args:
@@ -327,7 +293,7 @@ def get_training_data(
     phase: Optional[str] = None,
     years_back: Optional[int] = None,
     align_dates: bool = True
-) -> "pd.DataFrame":
+) -> pd.DataFrame:
     """Get training/tuning data (all data up to and including 2024-12-31).
     
     CRITICAL: This function ensures NO data after 2024-12-31 is included.
@@ -374,7 +340,7 @@ def get_training_data(
 def get_trading_data(
     tickers: Optional[List[str]] = None,
     align_dates: bool = True
-) -> "pd.DataFrame":
+) -> pd.DataFrame:
     """Get trading simulation data (all data from start of 2025 onwards).
     
     CRITICAL: This function ensures ONLY data from 2025-Jan-01 onwards is returned,
@@ -407,7 +373,7 @@ def get_trading_data(
 # CONVENIENCE ALIASES (for backward compatibility)
 # =============================================================================
 
-def get_ohlcv(ticker: str, start_date: Optional[str] = None, end_date: Optional[str] = None) -> "pd.DataFrame":
+def get_ohlcv(ticker: str, start_date: Optional[str] = None, end_date: Optional[str] = None) -> pd.DataFrame:
     """Convenience alias for get_data() - get OHLCV data for a single ticker.
     
     Args:
@@ -435,19 +401,6 @@ def simicx_test_data_loader():
     4. Temporal split integrity (training ≤ 2024, trading ≥ 2025)
     5. Date alignment across tickers
     """
-    # Check dependencies first
-    if not _DEPS_AVAILABLE:
-        print(f"⚠ Skipping tests - missing dependency: {_DEPS_ERROR}")
-        print("\n🎉 Tests skipped (dependencies not available in this environment)")
-        return
-    
-    # Check MongoDB configuration
-    if not MONGODB_URI or not MONGODB_DATABASE:
-        print("⚠ Skipping tests - MongoDB environment variables not set")
-        print("  Set SIMICX_MONGODB_URI and SIMICX_MONGODB_DATABASE to run tests")
-        print("\n🎉 Tests skipped (database not configured)")
-        return
-    
     print("Testing data_loader module...")
     
     # Test 1: Get tickers

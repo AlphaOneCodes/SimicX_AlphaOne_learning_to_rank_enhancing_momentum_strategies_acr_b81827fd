@@ -118,6 +118,7 @@ def signal_gen(
         if 'time' in features_df.columns:
             features_df['date'] = features_df['time']
     
+    # CRITICAL: Sort by [ticker, date] for per-ticker shift operations
     features_df = features_df.sort_values(['ticker', 'date'])
     
     features_df['next_close'] = features_df.groupby('ticker')['close'].shift(-1)
@@ -128,6 +129,10 @@ def signal_gen(
     # Convert returns to integer ranks for LambdaRank (required by LightGBM ranking objective)
     # Higher return = higher rank (better)
     features_df['target'] = features_df.groupby('date')['return'].rank(method='first', ascending=True).astype(int)
+    
+    # CRITICAL: Re-sort by [date, ticker] for LambdaRank cross-sectional grouping
+    # LambdaRank requires rows to be contiguous by date for proper ranking groups
+    features_df = features_df.sort_values(['date', 'ticker']).reset_index(drop=True)
     
     split_dt = pd.to_datetime(split_date)
     train_df = features_df[features_df['date'] < split_dt].copy()
@@ -245,16 +250,79 @@ def signal_gen(
     
     predict_df['action'] = predict_df['signal'].apply(get_action)
     
-    output_df = predict_df[['date', 'ticker', 'action', 'quantity']].copy()
+    # Generate closing signals for positions that fall out of rankings
+    # This implements the paper's daily rebalancing: maintain exactly 6 positions (3 long + 3 short)
+    all_signals = []
+    
+    # Sort by date to process chronologically
+    dates = sorted(predict_df['date'].unique())
+    previous_positions = {}  # Track positions from previous day
+    
+    for date in dates:
+        day_df = predict_df[predict_df['date'] == date].copy()
+        
+        # Current day's target positions (non-zero signals)
+        target_long = set(day_df[day_df['signal'] == 1]['ticker'])
+        target_short = set(day_df[day_df['signal'] == -1]['ticker'])
+        target_positions = target_long | target_short
+        
+        # Generate CLOSE signals for positions no longer in target
+        for ticker, prev_signal in previous_positions.items():
+            if ticker not in target_positions:
+                # Position fell out of ranking - need to close it
+                close_row = {
+                    'date': date,
+                    'ticker': ticker,
+                    'action': 'SELL' if prev_signal == 1 else 'BUY',  # Opposite of original position
+                    'quantity': 0,  # Will be calculated by trading_sim based on current holdings
+                    'signal': 0,
+                    'is_close': True
+                }
+                all_signals.append(close_row)
+        
+        # Add new position signals from this day
+        for _, row in day_df[day_df['signal'] != 0].iterrows():
+            signal_row = {
+                'date': row['date'],
+                'ticker': row['ticker'],
+                'action': row['action'],
+                'quantity': row['quantity'],
+                'signal': row['signal'],
+                'is_close': False
+            }
+            all_signals.append(signal_row)
+        
+        # Update previous positions tracker
+        previous_positions = {
+            ticker: 1 for ticker in target_long
+        }
+        previous_positions.update({
+            ticker: -1 for ticker in target_short
+        })
+    
+    # Create output DataFrame
+    if len(all_signals) == 0:
+        # Return empty DataFrame with correct schema
+        output_df = pd.DataFrame(columns=['time', 'ticker', 'action', 'quantity'])
+        return output_df
+    
+    output_df = pd.DataFrame(all_signals)
     output_df = output_df.rename(columns={'date': 'time'})
     
-    output_df = output_df[output_df['quantity'] != 0].copy()
+    # For CLOSE signals, quantity should be set to a flag value that trading_sim recognizes
+    # Set quantity=0 for closes, trading_sim will use actual current holdings
+    output_df.loc[output_df['is_close'] == True, 'quantity'] = 0
     
-    output_df['quantity'] = output_df['quantity'].abs()
+    # For new positions, keep the calculated quantities and convert to absolute values
+    output_df.loc[output_df['is_close'] == False, 'quantity'] = output_df.loc[
+        output_df['is_close'] == False, 'quantity'
+    ].abs().round().astype(int)
     
-    output_df['quantity'] = output_df['quantity'].round().astype(int)
+    # Remove is_close column and filter
+    output_df = output_df.drop(columns=['signal', 'is_close'])
     
-    output_df = output_df[output_df['quantity'] > 0]
+    # Keep all signals (including quantity=0 for closes)
+    # trading_sim will handle closing positions based on action + quantity=0
     
     return output_df.reset_index(drop=True)
 
