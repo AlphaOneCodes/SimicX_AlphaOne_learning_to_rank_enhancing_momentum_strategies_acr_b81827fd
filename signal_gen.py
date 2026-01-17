@@ -248,83 +248,53 @@ def signal_gen(
         else:
             return 'HOLD'
     
+    
     predict_df['action'] = predict_df['signal'].apply(get_action)
     
-    # Generate closing signals for positions that fall out of rankings
-    # This implements the paper's daily rebalancing: maintain exactly 6 positions (3 long + 3 short)
+    # Generate TARGET POSITION signals for daily rebalancing
+    # Each signal represents the DESIRED final state, not an open/close order
+    # trading_sim will calculate deltas between current and target
     all_signals = []
     
     # Sort by date to process chronologically
     dates = sorted(predict_df['date'].unique())
-    previous_positions = {}  # Track positions from previous day
     
     for date in dates:
         day_df = predict_df[predict_df['date'] == date].copy()
         
-        # Current day's target positions (non-zero signals)
-        target_long = set(day_df[day_df['signal'] == 1]['ticker'])
-        target_short = set(day_df[day_df['signal'] == -1]['ticker'])
-        target_positions = target_long | target_short
-        
-        # Generate CLOSE signals for positions no longer in target
-        for ticker, prev_signal in previous_positions.items():
-            if ticker not in target_positions:
-                # Position fell out of ranking - need to close it
-                close_row = {
-                    'date': date,
-                    'ticker': ticker,
-                    'action': 'SELL' if prev_signal == 1 else 'BUY',  # Opposite of original position
-                    'quantity': 0,  # Will be calculated by trading_sim based on current holdings
-                    'signal': 0,
-                    'is_close': True
-                }
-                all_signals.append(close_row)
-        
-        # Add new position signals from this day
+        # For each non-zero signal, emit the TARGET position
+        # trading_sim will handle calculating the delta from current holdings
         for _, row in day_df[day_df['signal'] != 0].iterrows():
+            ticker = row['ticker']
+            target_qty = row['quantity']  # This is the TARGET position size
+            action = row['action']
+            
+            # Emit target position signal
             signal_row = {
                 'date': row['date'],
-                'ticker': row['ticker'],
-                'action': row['action'],
-                'quantity': row['quantity'],
-                'signal': row['signal'],
-                'is_close': False
+                'ticker': ticker,
+                'action': action,  # This indicates direction (long/short)
+                'quantity': abs(target_qty),  # Target size
+                'is_target': True  # Flag to indicate this is a target, not an order
             }
             all_signals.append(signal_row)
-        
-        # Update previous positions tracker
-        previous_positions = {
-            ticker: 1 for ticker in target_long
-        }
-        previous_positions.update({
-            ticker: -1 for ticker in target_short
-        })
     
     # Create output DataFrame
     if len(all_signals) == 0:
-        # Return empty DataFrame with correct schema
         output_df = pd.DataFrame(columns=['time', 'ticker', 'action', 'quantity'])
         return output_df
     
     output_df = pd.DataFrame(all_signals)
     output_df = output_df.rename(columns={'date': 'time'})
     
-    # For CLOSE signals, quantity should be set to a flag value that trading_sim recognizes
-    # Set quantity=0 for closes, trading_sim will use actual current holdings
-    output_df.loc[output_df['is_close'] == True, 'quantity'] = 0
+    # Convert quantities to integers
+    output_df['quantity'] = output_df['quantity'].abs().round().astype(int)
     
-    # For new positions, keep the calculated quantities and convert to absolute values
-    output_df.loc[output_df['is_close'] == False, 'quantity'] = output_df.loc[
-        output_df['is_close'] == False, 'quantity'
-    ].abs().round().astype(int)
-    
-    # Remove is_close column and filter
-    output_df = output_df.drop(columns=['signal', 'is_close'])
-    
-    # Keep all signals (including quantity=0 for closes)
-    # trading_sim will handle closing positions based on action + quantity=0
+    # Remove flag column before returning
+    output_df = output_df.drop(columns=['is_target'])
     
     return output_df.reset_index(drop=True)
+
 
 
 def simicx_test_gpu_detection():

@@ -962,375 +962,439 @@ def trading_sim(
     prev_value = initial_capital
     date_idx = 0
     
-    # Process each trade
-    for idx, trade in trading_sheet.iterrows():
-        trade_time = trade['time']
-        ticker = trade['ticker']
-        action = trade['action']
-        target_qty = trade['quantity']
+    # Group trades by date for end-of-day cleanup
+    trading_dates = sorted(trading_sheet['time'].unique()) if len(trading_sheet) > 0 else []
+    
+    # Process trades grouped by date
+    for trade_date in trading_dates:
+        day_trades = trading_sheet[trading_sheet['time'] == trade_date]
         
-        # Handle optional target price
-        if 'price' in trade and pd.notna(trade['price']):
-            target_price = trade['price']
-        else:
-            # Use market close price if no target provided
-            target_price = price_lookup.get((trade_time, ticker), 0.0)
-            if target_price == 0:
-                # Will be rejected later but need a number
-                target_price = 0.0
+        # Track which tickers received signals today (for cleanup)
+        tickers_with_signals = set()
         
-        # Record portfolio values for all dates BEFORE this trade date
-        # This captures the portfolio state before any trades on trade_time
-        while date_idx < len(all_dates) and all_dates[date_idx] < trade_time:
-            date = all_dates[date_idx]
-            prices = {t: price_lookup.get((date, t), 0) for t in all_tickers}
-            port_value = portfolio.get_total_value(prices)
-            if port_value > 0:  # Only record if we have valid prices
-                daily_return = (port_value - prev_value) / prev_value if prev_value > 0 else 0
-                daily_values.append({
-                    'time': date,
-                    'portfolio_value': port_value,
-                    'return': daily_return
-                })
-                prev_value = port_value
-            date_idx += 1
+        # Process each trade for this date
+        for idx, trade in day_trades.iterrows():
+            trade_time = trade['time']
+            ticker = trade['ticker']
+            action = trade['action']
+            target_qty = trade['quantity']
         
-        # Validate ticker exists in data
-        if ticker not in all_tickers:
-            trade_records.append({
-                'time': trade_time,
-                'ticker': ticker,
-                'action': action,
-                'quantity': 0,
-                'target_price': target_price,
-                'executed_price': 0,
-                'commission': 0,
-                'slippage_cost': 0,
-                'total_cost': 0,
-                'realized_pnl': 0,
-                'cash_balance': portfolio.cash,
-                'holdings_value': portfolio.get_holdings_value(
-                    {t: price_lookup.get((trade_time, t), 0) for t in all_tickers}
-                ),
-                'portfolio_value': portfolio.get_total_value(
-                    {t: price_lookup.get((trade_time, t), 0) for t in all_tickers}
-                ),
-                'status': 'REJECTED',
-                'notes': 'Ticker not found'
-            })
-            continue
-        
-        # Calculate execution price with slippage and spread
-        exec_price = calculate_execution_price(
-            target_price, action, slippage_rate, spread_rate
-        )
-        
-        # Validate and adjust execution price to stay within day's high/low range
-        day_high = high_lookup.get((trade_time, ticker), None)
-        day_low = low_lookup.get((trade_time, ticker), None)
-        
-        original_exec_price = exec_price
-        execution_note = ""
-        
-        if day_high is not None and day_low is not None:
-             # If target_price was 0 (missing), we default to Close, which should be valid.
-             # If explicit target was given, we check bounds.
-             if 'price' in trade and pd.notna(trade['price']) and trade['price'] > 0:
-                if action == 'buy':
-                    # For buys: willing to pay up to exec_price
-                    if exec_price > day_high:
-                        # Target is above high - execute at high (better price for buyer)
-                        exec_price = day_high
-                        execution_note = f" (filled at day high ${day_high:.2f})"
-                    elif exec_price < day_low:
-                        # Target is below low - cannot execute (market never that cheap)
-                        trade_records.append({
-                            'time': trade_time,
-                            'ticker': ticker,
-                            'action': action,
-                            'quantity': 0,
-                            'target_price': target_price,
-                            'executed_price': 0,
-                            'commission': 0,
-                            'slippage_cost': 0,
-                            'total_cost': 0,
-                            'realized_pnl': 0,
-                            'cash_balance': portfolio.cash,
-                            'holdings_value': portfolio.get_holdings_value(
-                                {t: price_lookup.get((trade_time, t), 0) for t in all_tickers}
-                            ),
-                            'portfolio_value': portfolio.get_total_value(
-                                {t: price_lookup.get((trade_time, t), 0) for t in all_tickers}
-                            ),
-                            'status': 'REJECTED',
-                            'notes': f'Buy price ${exec_price:.2f} below day low ${day_low:.2f}'
-                        })
-                        continue
-                else:  # sell
-                    # For sells: willing to sell down to exec_price
-                    if exec_price < day_low:
-                        # Target is below low - execute at low (better price for seller)
-                        exec_price = day_low
-                        execution_note = f" (filled at day low ${day_low:.2f})"
-                    elif exec_price > day_high:
-                        # Target is above high - cannot execute (market never that high)
-                        trade_records.append({
-                            'time': trade_time,
-                            'ticker': ticker,
-                            'action': action,
-                            'quantity': 0,
-                            'target_price': target_price,
-                            'executed_price': 0,
-                            'commission': 0,
-                            'slippage_cost': 0,
-                            'total_cost': 0,
-                            'realized_pnl': 0,
-                            'cash_balance': portfolio.cash,
-                            'holdings_value': portfolio.get_holdings_value(
-                                {t: price_lookup.get((trade_time, t), 0) for t in all_tickers}
-                            ),
-                            'portfolio_value': portfolio.get_total_value(
-                                {t: price_lookup.get((trade_time, t), 0) for t in all_tickers}
-                            ),
-                            'status': 'REJECTED',
-                            'notes': f'Sell price ${exec_price:.2f} above day high ${day_high:.2f}'
-                        })
-                        continue
-        
-        # Calculate trade value and fees
-        trade_value = target_qty * exec_price
-        commission = trade_value * commission_rate
-        slippage_cost = abs(exec_price - target_price) * target_qty
-        
-        # Get current prices for portfolio valuation
-        current_prices = {t: price_lookup.get((trade_time, t), 0) for t in all_tickers}
-        current_portfolio_value = portfolio.get_total_value(current_prices)
-        
-        # Position and constraint checking
-        position = portfolio.get_position(ticker)
-        status = 'EXECUTED'
-        notes = execution_note.strip() if execution_note else ''
-        realized_pnl = 0.0
-        executed_qty = target_qty
-        
-        # Handle quantity=0 as signal to close entire position (for daily rebalancing)
-        if target_qty == 0 and position.quantity != 0:
-            # Close entire position
-            current_qty = position.quantity
-            if current_qty > 0:
-                # Close long position -> SELL
-                action = 'sell'
-                executed_qty = current_qty
+            # Handle optional target price
+            if 'price' in trade and pd.notna(trade['price']):
+                target_price = trade['price']
             else:
-                # Close short position -> BUY
+                # Use market close price if no target provided
+                target_price = price_lookup.get((trade_time, ticker), 0.0)
+                if target_price == 0:
+                    # Will be rejected later but need a number
+                    target_price = 0.0
+            
+            # Record portfolio values for all dates BEFORE this trade date
+            # This captures the portfolio state before any trades on trade_time
+            while date_idx < len(all_dates) and all_dates[date_idx] < trade_time:
+                date = all_dates[date_idx]
+                prices = {t: price_lookup.get((date, t), 0) for t in all_tickers}
+                port_value = portfolio.get_total_value(prices)
+                if port_value > 0:  # Only record if we have valid prices
+                    daily_return = (port_value - prev_value) / prev_value if prev_value > 0 else 0
+                    daily_values.append({
+                        'time': date,
+                        'portfolio_value': port_value,
+                        'return': daily_return
+                    })
+                    prev_value = port_value
+                date_idx += 1
+            
+            # Validate ticker exists in data
+            if ticker not in all_tickers:
+                trade_records.append({
+                    'time': trade_time,
+                    'ticker': ticker,
+                    'action': action,
+                    'quantity': 0,
+                    'target_price': target_price,
+                    'executed_price': 0,
+                    'commission': 0,
+                    'slippage_cost': 0,
+                    'total_cost': 0,
+                    'realized_pnl': 0,
+                    'cash_balance': portfolio.cash,
+                    'holdings_value': portfolio.get_holdings_value(
+                        {t: price_lookup.get((trade_time, t), 0) for t in all_tickers}
+                    ),
+                    'portfolio_value': portfolio.get_total_value(
+                        {t: price_lookup.get((trade_time, t), 0) for t in all_tickers}
+                    ),
+                    'status': 'REJECTED',
+                    'notes': 'Ticker not found'
+                })
+                continue
+            
+            # Calculate execution price with slippage and spread
+            exec_price = calculate_execution_price(
+                target_price, action, slippage_rate, spread_rate
+            )
+            
+            # Validate and adjust execution price to stay within day's high/low range
+            day_high = high_lookup.get((trade_time, ticker), None)
+            day_low = low_lookup.get((trade_time, ticker), None)
+            
+            original_exec_price = exec_price
+            execution_note = ""
+            
+            if day_high is not None and day_low is not None:
+                 # If target_price was 0 (missing), we default to Close, which should be valid.
+                 # If explicit target was given, we check bounds.
+                 if 'price' in trade and pd.notna(trade['price']) and trade['price'] > 0:
+                    if action == 'buy':
+                        # For buys: willing to pay up to exec_price
+                        if exec_price > day_high:
+                            # Target is above high - execute at high (better price for buyer)
+                            exec_price = day_high
+                            execution_note = f" (filled at day high ${day_high:.2f})"
+                        elif exec_price < day_low:
+                            # Target is below low - cannot execute (market never that cheap)
+                            trade_records.append({
+                                'time': trade_time,
+                                'ticker': ticker,
+                                'action': action,
+                                'quantity': 0,
+                                'target_price': target_price,
+                                'executed_price': 0,
+                                'commission': 0,
+                                'slippage_cost': 0,
+                                'total_cost': 0,
+                                'realized_pnl': 0,
+                                'cash_balance': portfolio.cash,
+                                'holdings_value': portfolio.get_holdings_value(
+                                    {t: price_lookup.get((trade_time, t), 0) for t in all_tickers}
+                                ),
+                                'portfolio_value': portfolio.get_total_value(
+                                    {t: price_lookup.get((trade_time, t), 0) for t in all_tickers}
+                                ),
+                                'status': 'REJECTED',
+                                'notes': f'Buy price ${exec_price:.2f} below day low ${day_low:.2f}'
+                            })
+                            continue
+                    else:  # sell
+                        # For sells: willing to sell down to exec_price
+                        if exec_price < day_low:
+                            # Target is below low - execute at low (better price for seller)
+                            exec_price = day_low
+                            execution_note = f" (filled at day low ${day_low:.2f})"
+                        elif exec_price > day_high:
+                            # Target is above high - cannot execute (market never that high)
+                            trade_records.append({
+                                'time': trade_time,
+                                'ticker': ticker,
+                                'action': action,
+                                'quantity': 0,
+                                'target_price': target_price,
+                                'executed_price': 0,
+                                'commission': 0,
+                                'slippage_cost': 0,
+                                'total_cost': 0,
+                                'realized_pnl': 0,
+                                'cash_balance': portfolio.cash,
+                                'holdings_value': portfolio.get_holdings_value(
+                                    {t: price_lookup.get((trade_time, t), 0) for t in all_tickers}
+                                ),
+                                'portfolio_value': portfolio.get_total_value(
+                                    {t: price_lookup.get((trade_time, t), 0) for t in all_tickers}
+                                ),
+                                'status': 'REJECTED',
+                                'notes': f'Sell price ${exec_price:.2f} above day high ${day_high:.2f}'
+                            })
+                            continue
+            # DELTA-BASED REBALANCING: Calculate difference FIRST
+            # Modify target_qty to be the DELTA before any other processing
+            position = portfolio.get_position(ticker)
+            current_qty = position.quantity  # Positive for long, negative for short
+            
+            # Convert action to target direction
+            if action == 'buy':
+                target_signed_qty = abs(target_qty)  # Positive = long position
+            else:  # sell
+                target_signed_qty = -abs(target_qty)  # Negative = short position
+            
+            # Calculate delta: what we need to trade to reach target
+            delta_qty = target_signed_qty - current_qty
+            
+            # Override target_qty with delta and adjust action if needed
+            if delta_qty > 0:
                 action = 'buy'
-                executed_qty = abs(current_qty)
+                target_qty = abs(delta_qty)
+            elif delta_qty < 0:
+                action = 'sell'
+                target_qty = abs(delta_qty)
+            else:
+                # Already at target, skip this trade entirely
+                target_qty = 0
             
-            # Recalculate with actual close quantity
-            trade_value = executed_qty * exec_price
+            # Now proceed with normal processing using delta as target_qty
+            # Calculate trade value and fees
+            trade_value = target_qty * exec_price
             commission = trade_value * commission_rate
-            slippage_cost = abs(exec_price - target_price) * executed_qty
-            notes = 'Closing position (daily rebalance)'
-        
-        if action == 'buy':
-            total_cost = trade_value + commission
+            slippage_cost = abs(exec_price - target_price) * target_qty
             
-            # Check minimum trade value
-            if trade_value < min_trade_value:
-                status = 'REJECTED'
-                notes = f'Below min trade value (${min_trade_value})'
-                executed_qty = 0
+            # Get current prices for portfolio valuation
+            current_prices = {t: price_lookup.get((trade_time, t), 0) for t in all_tickers}
+            current_portfolio_value = portfolio.get_total_value(current_prices)
+            
+            # Position and constraint checking
+            status = 'EXECUTED' if target_qty > 0 else 'SKIPPED'
+            notes = execution_note.strip() if execution_note else ''
+            if target_qty == 0:
+                notes = 'Already at target position'
+            realized_pnl = 0.0
+            executed_qty = target_qty
+            
+            if action == 'buy':
+                total_cost = trade_value + commission
                 
-            # Check cash constraint (no leverage)
-            elif not allow_leverage and total_cost > portfolio.cash:
-                # Adjust quantity to what we can afford
-                # Formula: cash = qty * price * (1 + commission_rate)
-                # So: qty = cash / (price * (1 + commission_rate))
-                affordable_qty = portfolio.cash / (exec_price * (1 + commission_rate))
-                trade_value = affordable_qty * exec_price
-                
-                if trade_value > min_trade_value:
-                    executed_qty = affordable_qty
-                    commission = trade_value * commission_rate
-                    total_cost = trade_value + commission
-                    status = 'EXECUTED'
-                    notes = 'Reduced due to cash constraint'
-                else:
+                # Check minimum trade value
+                if trade_value < min_trade_value:
                     status = 'REJECTED'
-                    notes = 'Insufficient cash'
+                    notes = f'Below min trade value (${min_trade_value})'
                     executed_qty = 0
                     
-            # Check max position constraint
-            if executed_qty > 0:
-                new_position_value = (position.quantity + executed_qty) * exec_price
-                if new_position_value > current_portfolio_value * max_position_pct:
-                    # Use current market price for existing position valuation
-                    current_price = current_prices.get(ticker, exec_price)
-                    max_addl_value = current_portfolio_value * max_position_pct - position.quantity * current_price
-                    if max_addl_value > min_trade_value:
-                        executed_qty = max_addl_value / exec_price
-                        trade_value = executed_qty * exec_price
+                # Check cash constraint (no leverage)
+                elif not allow_leverage and total_cost > portfolio.cash:
+                    # Adjust quantity to what we can afford
+                    # Formula: cash = qty * price * (1 + commission_rate)
+                    # So: qty = cash / (price * (1 + commission_rate))
+                    affordable_qty = portfolio.cash / (exec_price * (1 + commission_rate))
+                    trade_value = affordable_qty * exec_price
+                    
+                    if trade_value > min_trade_value:
+                        executed_qty = affordable_qty
                         commission = trade_value * commission_rate
                         total_cost = trade_value + commission
                         status = 'EXECUTED'
-                        notes = 'Reduced due to position limit'
+                        notes = 'Reduced due to cash constraint'
                     else:
                         status = 'REJECTED'
-                        notes = 'Position limit reached'
+                        notes = 'Insufficient cash'
                         executed_qty = 0
-            
-            if executed_qty > 0:
-                # Check if we're covering a short position
+                        
+                # Check max position constraint
+                if executed_qty > 0:
+                    new_position_value = (position.quantity + executed_qty) * exec_price
+                    if new_position_value > current_portfolio_value * max_position_pct:
+                        # Use current market price for existing position valuation
+                        current_price = current_prices.get(ticker, exec_price)
+                        max_addl_value = current_portfolio_value * max_position_pct - position.quantity * current_price
+                        if max_addl_value > min_trade_value:
+                            executed_qty = max_addl_value / exec_price
+                            trade_value = executed_qty * exec_price
+                            commission = trade_value * commission_rate
+                            total_cost = trade_value + commission
+                            status = 'EXECUTED'
+                            notes = 'Reduced due to position limit'
+                        else:
+                            status = 'REJECTED'
+                            notes = 'Position limit reached'
+                            executed_qty = 0
+                
+                if executed_qty > 0:
+                    # Check if we're covering a short position
+                    current_position_qty = position.quantity
+                    
+                    if current_position_qty < 0:
+                        # We have a short position - buying covers it
+                        abs_short_qty = abs(current_position_qty)
+                        qty_covering_short = min(executed_qty, abs_short_qty)
+                        
+                        # Remove short position (cover it)
+                        covered_qty, short_cost_basis = position.remove(qty_covering_short)
+                        
+                        # Realized P&L from covering short
+                        # short_cost_basis = negative (net proceeds received after short commission)
+                        # cost_to_cover = what we pay to buy back (including cover commission)
+                        # P&L = proceeds_received - cost_to_cover
+                        cover_value = covered_qty * exec_price
+                        cover_commission = cover_value * commission_rate
+                        cost_to_cover = cover_value + cover_commission
+                        realized_pnl = -short_cost_basis - cost_to_cover
+                        
+                        # Update commission for short cover
+                        commission = cover_commission
+                        
+                        # If buying more than short quantity, add remainder as long position
+                        if executed_qty > abs_short_qty:
+                            remaining_long_qty = executed_qty - abs_short_qty
+                            remaining_cost = remaining_long_qty * exec_price
+                            remaining_commission = remaining_cost * commission_rate
+                            remaining_total = remaining_cost + remaining_commission
+                            cost_per_share_with_commission = remaining_total / remaining_long_qty
+                            position.add(remaining_long_qty, cost_per_share_with_commission)
+                            commission += remaining_commission  # Total commission for cover + long
+                            status = 'EXECUTED'
+                            notes = 'Short cover + long'
+                        
+                        # Recalculate total_cost for the entire buy operation
+                        total_cost = executed_qty * exec_price + commission
+                    else:
+                        # Normal long position addition
+                        # Include commission in cost basis: total_cost / quantity
+                        cost_per_share_with_commission = total_cost / executed_qty
+                        position.add(executed_qty, cost_per_share_with_commission)
+                    
+                    portfolio.cash -= total_cost
+                    
+            else:  # sell
+                # Determine how much we can sell
                 current_position_qty = position.quantity
                 
-                if current_position_qty < 0:
-                    # We have a short position - buying covers it
-                    abs_short_qty = abs(current_position_qty)
-                    qty_covering_short = min(executed_qty, abs_short_qty)
-                    
-                    # Remove short position (cover it)
-                    covered_qty, short_cost_basis = position.remove(qty_covering_short)
-                    
-                    # Realized P&L from covering short
-                    # short_cost_basis = negative (net proceeds received after short commission)
-                    # cost_to_cover = what we pay to buy back (including cover commission)
-                    # P&L = proceeds_received - cost_to_cover
-                    cover_value = covered_qty * exec_price
-                    cover_commission = cover_value * commission_rate
-                    cost_to_cover = cover_value + cover_commission
-                    realized_pnl = -short_cost_basis - cost_to_cover
-                    
-                    # Update commission for short cover
-                    commission = cover_commission
-                    
-                    # If buying more than short quantity, add remainder as long position
-                    if executed_qty > abs_short_qty:
-                        remaining_long_qty = executed_qty - abs_short_qty
-                        remaining_cost = remaining_long_qty * exec_price
-                        remaining_commission = remaining_cost * commission_rate
-                        remaining_total = remaining_cost + remaining_commission
-                        cost_per_share_with_commission = remaining_total / remaining_long_qty
-                        position.add(remaining_long_qty, cost_per_share_with_commission)
-                        commission += remaining_commission  # Total commission for cover + long
-                        status = 'EXECUTED'
-                        notes = 'Short cover + long'
-                    
-                    # Recalculate total_cost for the entire buy operation
-                    total_cost = executed_qty * exec_price + commission
+                if current_position_qty <= 0 and not allow_short:
+                    # No long position and shorting disabled
+                    status = 'REJECTED'
+                    notes = 'No position to sell (shorting disabled)'
+                    executed_qty = 0
+                elif current_position_qty < target_qty and not allow_short:
+                    # Partial position and shorting disabled
+                    executed_qty = current_position_qty
+                    status = 'EXECUTED'
+                    notes = 'Reduced to available position'
+                elif current_position_qty >= target_qty:
+                    # We have enough long position to cover the sale
+                    executed_qty = target_qty
                 else:
-                    # Normal long position addition
-                    # Include commission in cost basis: total_cost / quantity
-                    cost_per_share_with_commission = total_cost / executed_qty
-                    position.add(executed_qty, cost_per_share_with_commission)
+                    # current_position_qty < target_qty and allow_short=True
+                    # Sell what we have + create short for remainder
+                    executed_qty = target_qty
                 
-                portfolio.cash -= total_cost
-                
-        else:  # sell
-            # Determine how much we can sell
-            current_position_qty = position.quantity
-            
-            if current_position_qty <= 0 and not allow_short:
-                # No long position and shorting disabled
-                status = 'REJECTED'
-                notes = 'No position to sell (shorting disabled)'
-                executed_qty = 0
-            elif current_position_qty < target_qty and not allow_short:
-                # Partial position and shorting disabled
-                executed_qty = current_position_qty
-                status = 'EXECUTED'
-                notes = 'Reduced to available position'
-            elif current_position_qty >= target_qty:
-                # We have enough long position to cover the sale
-                executed_qty = target_qty
-            else:
-                # current_position_qty < target_qty and allow_short=True
-                # Sell what we have + create short for remainder
-                executed_qty = target_qty
-            
-            if executed_qty > 0:
-                # Case 1: Selling from long position
-                if current_position_qty > 0:
-                    qty_from_long = min(executed_qty, current_position_qty)
-                    sold_qty, cost_basis = position.remove(qty_from_long)
-                    
-                    # Calculate proceeds and realized P&L from closing long
-                    proceeds = sold_qty * exec_price
-                    commission_long = proceeds * commission_rate
-                    net_proceeds = proceeds - commission_long
-                    realized_pnl = net_proceeds - cost_basis
-                    portfolio.cash += net_proceeds
-                    commission = commission_long
-                    
-                    # If selling more than we have, create short for remainder (only if allowed)
-                    if executed_qty > current_position_qty:
+                if executed_qty > 0:
+                    # Case 1: Selling from long position
+                    if current_position_qty > 0:
+                        qty_from_long = min(executed_qty, current_position_qty)
+                        sold_qty, cost_basis = position.remove(qty_from_long)
+                        
+                        # Calculate proceeds and realized P&L from closing long
+                        proceeds = sold_qty * exec_price
+                        commission_long = proceeds * commission_rate
+                        net_proceeds = proceeds - commission_long
+                        realized_pnl = net_proceeds - cost_basis
+                        portfolio.cash += net_proceeds
+                        commission = commission_long
+                        
+                        # If selling more than we have, create short for remainder (only if allowed)
+                        if executed_qty > current_position_qty:
+                            if not allow_short:
+                                # This should not happen due to earlier constraints, but guard anyway
+                                raise ValueError(
+                                    f"Internal error: Attempted to create short position when allow_short=False. "
+                                    f"executed_qty={executed_qty}, current_position_qty={current_position_qty}"
+                                )
+                            
+                            short_qty = executed_qty - current_position_qty
+                            
+                            # Short sale proceeds (minus commission)
+                            short_proceeds = short_qty * exec_price
+                            commission_short = short_proceeds * commission_rate
+                            net_short_proceeds = short_proceeds - commission_short
+                            
+                            # Add negative quantity for short position
+                            # Store net proceeds per share (includes commission cost)
+                            net_proceeds_per_share = net_short_proceeds / short_qty
+                            position.add(-short_qty, net_proceeds_per_share)
+                            
+                            portfolio.cash += net_short_proceeds
+                            commission += commission_short
+                            status = 'EXECUTED'
+                            notes = 'Partial close + short'
+                    else:
+                        # Case 2: Pure short sale (no existing long position)
                         if not allow_short:
                             # This should not happen due to earlier constraints, but guard anyway
                             raise ValueError(
                                 f"Internal error: Attempted to create short position when allow_short=False. "
-                                f"executed_qty={executed_qty}, current_position_qty={current_position_qty}"
+                                f"current_position_qty={current_position_qty}, executed_qty={executed_qty}"
                             )
                         
-                        short_qty = executed_qty - current_position_qty
-                        
-                        # Short sale proceeds (minus commission)
-                        short_proceeds = short_qty * exec_price
-                        commission_short = short_proceeds * commission_rate
-                        net_short_proceeds = short_proceeds - commission_short
+                        # Short sale proceeds
+                        proceeds = executed_qty * exec_price
+                        commission = proceeds * commission_rate
+                        net_proceeds = proceeds - commission
                         
                         # Add negative quantity for short position
                         # Store net proceeds per share (includes commission cost)
-                        net_proceeds_per_share = net_short_proceeds / short_qty
-                        position.add(-short_qty, net_proceeds_per_share)
+                        net_proceeds_per_share = net_proceeds / executed_qty
+                        position.add(-executed_qty, net_proceeds_per_share)
                         
-                        portfolio.cash += net_short_proceeds
-                        commission += commission_short
-                        status = 'EXECUTED'
-                        notes = 'Partial close + short'
-                else:
-                    # Case 2: Pure short sale (no existing long position)
-                    if not allow_short:
-                        # This should not happen due to earlier constraints, but guard anyway
-                        raise ValueError(
-                            f"Internal error: Attempted to create short position when allow_short=False. "
-                            f"current_position_qty={current_position_qty}, executed_qty={executed_qty}"
-                        )
+                        portfolio.cash += net_proceeds
+                        # No realized P&L yet (will realize when covering)
+                        realized_pnl = 0.0
                     
-                    # Short sale proceeds
-                    proceeds = executed_qty * exec_price
-                    commission = proceeds * commission_rate
-                    net_proceeds = proceeds - commission
-                    
-                    # Add negative quantity for short position
-                    # Store net proceeds per share (includes commission cost)
-                    net_proceeds_per_share = net_proceeds / executed_qty
-                    position.add(-executed_qty, net_proceeds_per_share)
-                    
-                    portfolio.cash += net_proceeds
-                    # No realized P&L yet (will realize when covering)
-                    realized_pnl = 0.0
-                
-                trade_value = executed_qty * exec_price
-        
-        # Record trade
-        current_prices = {t: price_lookup.get((trade_time, t), 0) for t in all_tickers}
-        
-        trade_records.append({
-            'time': trade_time,
-            'ticker': ticker,
-            'action': action,
-            'quantity': executed_qty,
-            'target_price': target_price,
-            'executed_price': exec_price if executed_qty > 0 else 0,
-            'commission': commission if executed_qty > 0 else 0,
-            'slippage_cost': slippage_cost if executed_qty > 0 else 0,
-            'total_cost': trade_value + commission if executed_qty > 0 else 0,
-            'realized_pnl': realized_pnl,
-            'cash_balance': portfolio.cash,
-            'holdings_value': portfolio.get_holdings_value(current_prices),
-            'portfolio_value': portfolio.get_total_value(current_prices),
+                    trade_value = executed_qty * exec_price
+            
+            # Record trade
+            current_prices = {t: price_lookup.get((trade_time, t), 0) for t in all_tickers}
+            
+            trade_records.append({
+                'time': trade_time,
+                'ticker': ticker,
+                'action': action,
+                'quantity': executed_qty,
+                'target_price': target_price,
+                'executed_price': exec_price if executed_qty > 0 else 0,
+                'commission': commission if executed_qty > 0 else 0,
+                'slippage_cost': slippage_cost if executed_qty > 0 else 0,
+                'total_cost': trade_value + commission if executed_qty > 0 else 0,
+                'realized_pnl': realized_pnl,
+                'cash_balance': portfolio.cash,
+                'holdings_value': portfolio.get_holdings_value(current_prices),
+                'portfolio_value': portfolio.get_total_value(current_prices),
             'status': status,
             'notes': notes
         })
+            
+            # Track ticker for end-of-day cleanup
+            tickers_with_signals.add(ticker)
+        
+        # END-OF-DAY CLEANUP: Close positions without signals
+        current_positions = list(portfolio.positions.keys())
+        for ticker in current_positions:
+            if ticker not in tickers_with_signals:
+                position = portfolio.get_position(ticker)
+                if abs(position.quantity) > 0.01:
+                    exec_price = price_lookup.get((trade_date, ticker), 0)
+                    if exec_price > 0:
+                        if position.quantity > 0:
+                            close_action, close_qty = 'sell', position.quantity
+                        else:
+                            close_action, close_qty = 'buy', abs(position.quantity)
+                        
+                        close_value = close_qty * exec_price
+                        commission = close_value * commission_rate
+                        
+                        if close_action == 'buy':
+                            cash_change = -(close_value + commission)
+                            realized_pnl, _ = position.remove(close_qty, is_short_covering=True)
+                        else:
+                            cash_change = close_value - commission
+                            realized_pnl, _ = position.remove(close_qty, is_short_covering=False)
+                        
+                        portfolio.cash += cash_change
+                        current_prices = {t: price_lookup.get((trade_date, t), 0) for t in all_tickers}
+                        
+                        trade_records.append({
+                            'time': trade_date,
+                            'ticker': ticker,
+                            'action': close_action,
+                            'quantity': close_qty,
+                            'target_price': exec_price,
+                            'executed_price': exec_price,
+                            'commission': commission,
+                            'slippage_cost': 0,
+                            'total_cost': close_value + commission if close_action == 'buy' else close_value - commission,
+                            'realized_pnl': realized_pnl,
+                            'cash_balance': portfolio.cash,
+                            'holdings_value': portfolio.get_holdings_value(current_prices),
+                            'portfolio_value': portfolio.get_total_value(current_prices),
+                            'status': 'EXECUTED',
+                            'notes': 'Auto-close (no signal today)'
+                        })
         
         # Check if this is the last trade on this date (or if next trade is on a different date)
         is_last_trade_on_date = (idx == len(trading_sheet) - 1) or \
